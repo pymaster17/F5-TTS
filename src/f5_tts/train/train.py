@@ -1,5 +1,6 @@
 # training script.
 
+import importlib
 import os
 from importlib.resources import files
 
@@ -43,6 +44,14 @@ def main(model_cfg):
     )
 
     # init trainer
+    # Built before the Trainer, which compiles the model: validators may copy it.
+    validation, val_cfg = None, model_cfg.get("validation")
+    if val_cfg is not None and val_cfg.get("target"):
+        module_name, _, cls_name = val_cfg.target.rpartition(".")
+        validation = getattr(importlib.import_module(module_name), cls_name)(
+            model, **OmegaConf.to_container(val_cfg.get("kwargs", {}), resolve=True)
+        )
+
     trainer = Trainer(
         model,
         epochs=model_cfg.optim.epochs,
@@ -73,6 +82,9 @@ def main(model_cfg):
         local_vocoder_path=model_cfg.model.vocoder.local_path,
         model_cfg_dict=OmegaConf.to_container(model_cfg, resolve=True),
         compile=model_cfg.model.get("compile", False),
+        validation=validation,
+        validate_per_updates=val_cfg.get("every_updates", 0) if validation is not None else 0,
+        validate_at_start=val_cfg.get("at_start", False) if validation is not None else False,
     )
 
     train_dataset = load_dataset(model_cfg.datasets.name, tokenizer, mel_spec_kwargs=model_cfg.model.mel_spec)

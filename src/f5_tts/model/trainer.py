@@ -3,12 +3,13 @@ from __future__ import annotations
 import gc
 import math
 import os
+from datetime import timedelta
 
 import torch
 import torchaudio
 import wandb
 from accelerate import Accelerator
-from accelerate.utils import DistributedDataParallelKwargs
+from accelerate.utils import DistributedDataParallelKwargs, InitProcessGroupKwargs
 from ema_pytorch import EMA
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import LinearLR, SequentialLR
@@ -54,8 +55,15 @@ class Trainer:
         local_vocoder_path: str = "",  # local vocoder path
         model_cfg_dict: dict = dict(),  # training config
         compile: bool = False,  # torch.compile the DiT blocks and input embeddings
+        validation=None,  # callable(step=, accelerator=, ema_model=, writer=, log=) run on every rank
+        validate_per_updates: int = 0,
+        validate_at_start: bool = False,
     ):
         ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
+        handlers = [ddp_kwargs]
+        if validation is not None:
+            # the other ranks wait at a barrier while rank 0 scores the whole set
+            handlers.append(InitProcessGroupKwargs(timeout=timedelta(hours=3)))
 
         if logger == "wandb" and not wandb.api.api_key:
             logger = None
@@ -63,7 +71,7 @@ class Trainer:
 
         self.accelerator = Accelerator(
             log_with=logger if logger == "wandb" else None,
-            kwargs_handlers=[ddp_kwargs],
+            kwargs_handlers=handlers,
             gradient_accumulation_steps=grad_accumulation_steps,
             **accelerate_kwargs,
         )
@@ -133,6 +141,10 @@ class Trainer:
         self.local_vocoder_path = local_vocoder_path
 
         self.noise_scheduler = noise_scheduler
+
+        self.validation = validation
+        self.validate_per_updates = validate_per_updates
+        self.validate_at_start = validate_at_start
 
         self.duration_predictor = duration_predictor
 
@@ -276,6 +288,17 @@ class Trainer:
         gc.collect()
         return update
 
+    def validate(self, update):
+        self.accelerator.wait_for_everyone()
+        self.validation(
+            step=update,
+            accelerator=self.accelerator,
+            ema_model=self.ema_model if self.is_main else None,
+            writer=self.writer if self.logger == "tensorboard" else None,
+            log=lambda msg: print(msg, flush=True),
+        )
+        self.model.train()
+
     def train(self, train_dataset: Dataset, num_workers=16, resumable_with_seed: int = None):
         if self.log_samples:
             from f5_tts.infer.utils_infer import cfg_strength, load_vocoder, nfe_step, sway_sampling_coef
@@ -352,6 +375,9 @@ class Trainer:
             skipped_dataloader = self.accelerator.skip_first_batches(train_dataloader, num_batches=skipped_batch)
         else:
             skipped_epoch = 0
+
+        if self.validation is not None and self.validate_at_start:
+            self.validate(global_update)
 
         for epoch in range(skipped_epoch, self.epochs):
             self.model.train()
@@ -450,6 +476,14 @@ class Trainer:
                             f"{log_samples_path}/update_{global_update}_ref.wav", ref_audio, target_sample_rate
                         )
                         self.model.train()
+
+                if (
+                    self.validation is not None
+                    and self.validate_per_updates > 0
+                    and global_update % self.validate_per_updates == 0
+                    and self.accelerator.sync_gradients
+                ):
+                    self.validate(global_update)
 
         self.save_checkpoint(global_update, last=True)
 

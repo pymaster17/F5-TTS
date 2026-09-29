@@ -69,3 +69,24 @@ ckpts:
   keep_last_n_checkpoints: 3
   last_per_updates: 1000
   save_dir: /export/home2/n2505683d/VoxCPM/checkpoints/f5-svs/finetune
+
+# Audio validation, the same as VocalRender's (SingMOS / AES / HubertFA -> GAME,
+# voxcpm.f5_svs.validation) on CrawlSinger-zh-test with the EMA weights. Needs the
+# eval stack in F5-TTS/.venv (scripts/bootstrap_f5tts_env.sh) and the F5 text of
+# the manifest (scripts/export_f5_svs_valset.py).
+validation:
+  target: voxcpm.f5_svs.validation.F5SVSValidator
+  every_updates: 5000
+  at_start: False
+  kwargs:
+    manifest_dir: /export/home2/n2505683d/VoxCPM/benchmark/crawlsinger_test
+    vocoder_path: ${model.vocoder.local_path}
+    eval_config: conf/voxcpm_v2/base.yaml   # its eval_metrics block, relative to the VoxCPM repo
+    num_samples: -1                         # -1 = all 2969, as VocalRender's pretrain config
+    tb_max_samples: 20
+    nfe_step: 32
+    cfg_strength: 2.0
+    sway_sampling_coef: -1.0
+    max_batch_frames: 48000
+    compile: True                           # the eval copy's blocks, as model.compile
+    summary_dir: ${ckpts.save_dir}/val
