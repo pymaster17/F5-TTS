@@ -53,6 +53,7 @@ class Trainer:
         is_local_vocoder: bool = False,  # use local path vocoder
         local_vocoder_path: str = "",  # local vocoder path
         model_cfg_dict: dict = dict(),  # training config
+        compile: bool = False,  # torch.compile the DiT blocks and input embeddings
     ):
         ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
 
@@ -134,6 +135,14 @@ class Trainer:
         self.noise_scheduler = noise_scheduler
 
         self.duration_predictor = duration_predictor
+
+        if compile:
+            # After the EMA deep copy (which stays eager) and before DDP wrapping. Module.compile
+            # leaves parameter names alone, so checkpoints are interchangeable with eager runs.
+            # dynamic=True: every frame-bucketed batch has its own (batch, length).
+            transformer = model.transformer
+            for module in [*transformer.transformer_blocks, transformer.text_embed, transformer.input_embed]:
+                module.compile(dynamic=True)
 
         if bnb_optimizer:
             import bitsandbytes as bnb

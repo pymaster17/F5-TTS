@@ -36,6 +36,7 @@ model:
   tokenizer: custom
   tokenizer_path: /dataset/cyk/F5-SVS/finetune/vocab.txt
   backbone: DiT
+  compile: True   # per-block torch.compile: 1.7x/step, -16 GiB (VoxCPM docs/experiments/f5tts_nar_ablation.md)
   arch:
     dim: 1024
     depth: 22
