@@ -290,9 +290,7 @@ def load_dataset(
         with open(f"{dataset_name}/duration.json", "r", encoding="utf-8") as f:
             data_dict = json.load(f)
         durations = data_dict["duration"]
-        train_dataset = CustomDataset(
-            train_dataset, durations=durations, preprocessed_mel=preprocessed_mel, **mel_spec_kwargs
-        )
+        train_dataset = CustomDataset(train_dataset, durations=durations, preprocessed_mel=False, **mel_spec_kwargs)
 
     elif dataset_type == "HFDataset":
         print(

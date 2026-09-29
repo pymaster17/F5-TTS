@@ -52,6 +52,14 @@ def main(model_cfg):
             model, **OmegaConf.to_container(val_cfg.get("kwargs", {}), resolve=True)
         )
 
+    # Validation loss on a held-out F5 CustomDataset directory (raw.arrow + duration.json).
+    val_loss_cfg = model_cfg.get("val_loss") or {}
+    val_loss_dataset = None
+    if val_loss_cfg.get("dataset_dir"):
+        val_loss_dataset = load_dataset(
+            val_loss_cfg.dataset_dir, dataset_type="CustomDatasetPath", mel_spec_kwargs=model_cfg.model.mel_spec
+        )
+
     trainer = Trainer(
         model,
         epochs=model_cfg.optim.epochs,
@@ -85,6 +93,11 @@ def main(model_cfg):
         validation=validation,
         validate_per_updates=val_cfg.get("every_updates", 0) if validation is not None else 0,
         validate_at_start=val_cfg.get("at_start", False) if validation is not None else False,
+        val_loss_dataset=val_loss_dataset,
+        val_loss_per_updates=val_loss_cfg.get("every_updates", 0),
+        val_loss_at_start=val_loss_cfg.get("at_start", False),
+        val_loss_seed=val_loss_cfg.get("seed", 0),
+        val_loss_num_workers=val_loss_cfg.get("num_workers", 4),
     )
 
     train_dataset = load_dataset(model_cfg.datasets.name, tokenizer, mel_spec_kwargs=model_cfg.model.mel_spec)

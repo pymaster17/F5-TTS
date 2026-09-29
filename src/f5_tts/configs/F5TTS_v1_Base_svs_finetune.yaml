@@ -9,8 +9,8 @@
 # placed in save_dir as pretrained_*.safetensors: fresh optimizer/scheduler.
 #
 # Budget is PROVISIONAL (to be aligned with VocalRender's stage-2 run):
-# 4 x 80G GPUs x 38400 frames = ~1640 s of audio per update, so Muse (2000 h)
-# The five corpora (347 h) are ~760 updates per epoch. LR decays linearly to 0.
+# 2 x A100 40G (NVLink) x 38400 frames = ~820 s of audio per update, so the
+# five corpora (347 h) are ~1580 updates per epoch. LR decays linearly to 0.
 
 hydra:
   run:
@@ -18,7 +18,7 @@ hydra:
 
 datasets:
   name: F5SVS_finetune
-  batch_size_per_gpu: 38400   # 80G; ~17900 on 40G cards
+  batch_size_per_gpu: 38400   # fits 40G with the launcher's expandable_segments (peak 36.3 GB)
   batch_size_type: frame
   max_samples: 64
   num_workers: 16
@@ -69,6 +69,17 @@ ckpts:
   keep_last_n_checkpoints: 3
   last_per_updates: 1000
   save_dir: /export/home2/n2505683d/VoxCPM/checkpoints/f5-svs/finetune
+
+# Validation loss (the training flow-matching loss, deterministic, CFG dropout off)
+# on the same CrawlSinger-zh-test items as the audio validation, with their
+# recordings; as VocalRender's val_loss (valid_interval 1000). The dataset is
+# written by the VoxCPM repo's scripts/export_f5_svs_valset.py.
+val_loss:
+  dataset_dir: /export/home2/n2505683d/VoxCPM/benchmark/crawlsinger_test/f5_svs
+  every_updates: 1000
+  at_start: True
+  seed: 0
+  num_workers: 4
 
 # Audio validation, the same as VocalRender's (SingMOS / AES / HubertFA -> GAME,
 # voxcpm.f5_svs.validation) on CrawlSinger-zh-test with the EMA weights. Needs the

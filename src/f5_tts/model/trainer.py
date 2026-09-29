@@ -3,6 +3,8 @@ from __future__ import annotations
 import gc
 import math
 import os
+import random
+import time
 from datetime import timedelta
 
 import torch
@@ -58,6 +60,11 @@ class Trainer:
         validation=None,  # callable(step=, accelerator=, ema_model=, writer=, log=) run on every rank
         validate_per_updates: int = 0,
         validate_at_start: bool = False,
+        val_loss_dataset: Dataset | None = None,  # held-out set for the training loss, same batching
+        val_loss_per_updates: int = 0,
+        val_loss_at_start: bool = False,
+        val_loss_seed: int = 0,
+        val_loss_num_workers: int = 4,
     ):
         ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
         handlers = [ddp_kwargs]
@@ -145,6 +152,13 @@ class Trainer:
         self.validation = validation
         self.validate_per_updates = validate_per_updates
         self.validate_at_start = validate_at_start
+
+        self.val_loss_dataset = val_loss_dataset
+        self.val_loss_per_updates = val_loss_per_updates
+        self.val_loss_at_start = val_loss_at_start
+        self.val_loss_seed = val_loss_seed
+        self.val_loss_num_workers = val_loss_num_workers
+        self.val_loss_loader = None
 
         self.duration_predictor = duration_predictor
 
@@ -299,6 +313,76 @@ class Trainer:
         )
         self.model.train()
 
+    def build_val_loss_loader(self):
+        """This rank's share of the fixed validation batches, with their global indices.
+
+        Batches are made once, exactly as the training ones (frame-bucketed, same
+        threshold) but never shuffled, and dealt out round-robin over the ranks.
+        """
+        if self.batch_size_type != "frame":
+            raise ValueError("val_loss needs batch_size_type 'frame'")
+        batches = DynamicBatchSampler(
+            SequentialSampler(self.val_loss_dataset), self.batch_size_per_gpu, max_samples=self.max_samples
+        ).batches
+        rank, world = self.accelerator.process_index, self.accelerator.num_processes
+        self.val_loss_batch_ids = list(range(rank, len(batches), world))
+        self.val_loss_loader = DataLoader(
+            self.val_loss_dataset,
+            collate_fn=collate_fn,
+            num_workers=self.val_loss_num_workers,
+            pin_memory=True,
+            persistent_workers=self.val_loss_num_workers > 0,
+            batch_sampler=[batches[i] for i in self.val_loss_batch_ids],
+        )
+        if self.is_main:
+            frames = sum(self.val_loss_dataset.get_frame_len(i) for b in batches for i in b)
+            print(f"val_loss: {len(self.val_loss_dataset)} items, {len(batches)} batches, "
+                  f"{frames * self.val_loss_dataset.hop_length / self.val_loss_dataset.target_sample_rate / 3600:.2f} h")
+
+    def compute_val_loss(self, update):
+        """Flow-matching loss on the held-out set with the training weights.
+
+        Deterministic, so that curves compare across steps: each batch reseeds the
+        infilling span, noise and time from its global index (the same draws at
+        every evaluation, whatever the number of GPUs), CFG dropout is off (the
+        conditional loss, which is what inference uses) and so is DiT dropout.
+        Frame-weighted over batches. The training RNG streams are restored after.
+        """
+        model = self.accelerator.unwrap_model(self.model)
+        device = self.accelerator.device
+        drop_probs = model.audio_drop_prob, model.cond_drop_prob
+        rng = torch.get_rng_state(), torch.cuda.get_rng_state_all(), random.getstate()
+        model.eval()
+        model.audio_drop_prob = model.cond_drop_prob = 0.0
+        total = torch.zeros(2, dtype=torch.float64, device=device)  # sum(loss * frames), sum(frames)
+        start = time.time()
+        try:
+            with torch.no_grad(), self.accelerator.autocast():
+                for batch_id, batch in zip(self.val_loss_batch_ids, self.val_loss_loader):
+                    torch.manual_seed(self.val_loss_seed * 1_000_003 + batch_id)
+                    mel_lengths = batch["mel_lengths"].to(device)
+                    loss, _, _ = model(
+                        batch["mel"].permute(0, 2, 1).to(device),
+                        text=batch["text"],
+                        lens=mel_lengths,
+                        noise_scheduler=self.noise_scheduler,
+                    )
+                    frames = mel_lengths.sum().double()
+                    total += torch.stack([loss.double() * frames, frames])
+        finally:
+            model.audio_drop_prob, model.cond_drop_prob = drop_probs
+            torch.set_rng_state(rng[0])
+            torch.cuda.set_rng_state_all(rng[1])
+            random.setstate(rng[2])
+            model.train()
+        total = self.accelerator.reduce(total, reduction="sum")
+        val_loss = (total[0] / total[1]).item()
+        if self.accelerator.is_main_process:
+            self.accelerator.log({"val/loss": val_loss}, step=update)
+            if self.logger == "tensorboard":
+                self.writer.add_scalar("val/loss", val_loss, update)
+            print(f"[val_loss] update {update}: {val_loss:.4f} ({time.time() - start:.1f} s)", flush=True)
+
     def train(self, train_dataset: Dataset, num_workers=16, resumable_with_seed: int = None):
         if self.log_samples:
             from f5_tts.infer.utils_infer import cfg_strength, load_vocoder, nfe_step, sway_sampling_coef
@@ -376,6 +460,10 @@ class Trainer:
         else:
             skipped_epoch = 0
 
+        if self.val_loss_dataset is not None:
+            self.build_val_loss_loader()
+            if self.val_loss_at_start:
+                self.compute_val_loss(global_update)
         if self.validation is not None and self.validate_at_start:
             self.validate(global_update)
 
@@ -476,6 +564,14 @@ class Trainer:
                             f"{log_samples_path}/update_{global_update}_ref.wav", ref_audio, target_sample_rate
                         )
                         self.model.train()
+
+                if (
+                    self.val_loss_loader is not None
+                    and self.val_loss_per_updates > 0
+                    and global_update % self.val_loss_per_updates == 0
+                    and self.accelerator.sync_gradients
+                ):
+                    self.compute_val_loss(global_update)
 
                 if (
                     self.validation is not None
