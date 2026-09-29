@@ -50,7 +50,12 @@ def main(model_cfg):
         num_warmup_updates=model_cfg.optim.num_warmup_updates,
         save_per_updates=model_cfg.ckpts.save_per_updates,
         keep_last_n_checkpoints=model_cfg.ckpts.keep_last_n_checkpoints,
-        checkpoint_path=str(files("f5_tts").joinpath(f"../../{model_cfg.ckpts.save_dir}")),
+        # an absolute save_dir is used as is; joinpath("../../" + "/abs") would nest it under the repo
+        checkpoint_path=(
+            model_cfg.ckpts.save_dir
+            if os.path.isabs(model_cfg.ckpts.save_dir)
+            else str(files("f5_tts").joinpath(f"../../{model_cfg.ckpts.save_dir}"))
+        ),
         batch_size_per_gpu=model_cfg.datasets.batch_size_per_gpu,
         batch_size_type=model_cfg.datasets.batch_size_type,
         max_samples=model_cfg.datasets.max_samples,

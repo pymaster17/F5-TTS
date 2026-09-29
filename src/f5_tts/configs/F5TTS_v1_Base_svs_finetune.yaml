@@ -1,0 +1,70 @@
+# VocalRender NAR ablation, stage 2: stage-1 EMA -> the five real-singing corpora.
+# Architecture, mel and objective are F5TTS_v1_Base unchanged; only the data
+# (VocalRender's interleaved score in the text channel, exported by the VoxCPM
+# repo's scripts/export_f5_svs_dataset.py) and the vocab (+397 score tokens,
+# f5_tts.scripts.expand_vocab_svs) differ.
+#
+# Data is found the F5 way, data/<datasets.name>_<tokenizer>/, which the
+# launcher symlinks to /dataset/cyk/F5-SVS/finetune. Stage 1's EMA weights are
+# placed in save_dir as pretrained_*.safetensors: fresh optimizer/scheduler.
+#
+# Budget is PROVISIONAL (to be aligned with VocalRender's stage-2 run):
+# 4 x 80G GPUs x 38400 frames = ~1640 s of audio per update, so Muse (2000 h)
+# The five corpora (347 h) are ~760 updates per epoch. LR decays linearly to 0.
+
+hydra:
+  run:
+    dir: ${ckpts.save_dir}/hydra/${now:%Y-%m-%d_%H-%M-%S}
+
+datasets:
+  name: F5SVS_finetune
+  batch_size_per_gpu: 38400   # 80G; ~17900 on 40G cards
+  batch_size_type: frame
+  max_samples: 64
+  num_workers: 16
+
+optim:
+  epochs: 20
+  learning_rate: 1.0e-5       # F5 finetune default
+  num_warmup_updates: 500
+  grad_accumulation_steps: 1
+  max_grad_norm: 1.0
+  bnb_optimizer: False
+
+model:
+  name: F5TTS_v1_Base_svs
+  tokenizer: custom
+  tokenizer_path: /dataset/cyk/F5-SVS/finetune/vocab.txt
+  backbone: DiT
+  arch:
+    dim: 1024
+    depth: 22
+    heads: 16
+    ff_mult: 2
+    text_dim: 512
+    text_mask_padding: True
+    qk_norm: null
+    conv_layers: 4
+    pe_attn_head: null
+    attn_backend: torch
+    attn_mask_enabled: False
+    checkpoint_activations: False
+  mel_spec:
+    target_sample_rate: 24000
+    n_mel_channels: 100
+    hop_length: 256
+    win_length: 1024
+    n_fft: 1024
+    mel_spec_type: vocos
+  vocoder:
+    is_local: True
+    local_path: /export/home2/n2505683d/VoxCPM/pretrained_models/vocos-mel-24khz
+
+ckpts:
+  logger: tensorboard
+  wandb_run_name: ${model.name}_finetune
+  log_samples: True
+  save_per_updates: 5000
+  keep_last_n_checkpoints: 3
+  last_per_updates: 1000
+  save_dir: /export/home2/n2505683d/VoxCPM/checkpoints/f5-svs/finetune

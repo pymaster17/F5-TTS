@@ -188,6 +188,8 @@ class Trainer:
             or not os.path.exists(self.checkpoint_path)
             or not any(filename.endswith((".pt", ".safetensors")) for filename in os.listdir(self.checkpoint_path))
         ):
+            if self.is_main:
+                print(f"No checkpoint in {self.checkpoint_path}: training from scratch")
             return 0
 
         self.accelerator.wait_for_everyone()
@@ -211,6 +213,9 @@ class Trainer:
             else:
                 # If no training checkpoints, use pretrained model
                 latest_checkpoint = next(f for f in all_checkpoints if f.startswith("pretrained_"))
+
+        if self.is_main:
+            print(f"Loading checkpoint: {self.checkpoint_path}/{latest_checkpoint}")
 
         if latest_checkpoint.endswith(".safetensors"):  # always a pretrained checkpoint
             from safetensors.torch import load_file
