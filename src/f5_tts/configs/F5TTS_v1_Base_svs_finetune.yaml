@@ -8,9 +8,10 @@
 # launcher symlinks to /dataset/cyk/F5-SVS/finetune. Stage 1's EMA weights are
 # placed in save_dir as pretrained_*.safetensors: fresh optimizer/scheduler.
 #
-# Budget is PROVISIONAL (to be aligned with VocalRender's stage-2 run):
+# Budget: as stage 1, a constant LR after warmup (a tenth of stage 1's peak),
+# epochs only an upper bound, stopped early on the audio validation.
 # 2 x A100 40G (NVLink) x 38400 frames = ~820 s of audio per update, so the
-# five corpora (347 h) are ~1580 updates per epoch. LR decays linearly to 0.
+# five corpora (347 h) are 1853 updates per epoch (measured), ~93k at most.
 
 hydra:
   run:
@@ -24,9 +25,10 @@ datasets:
   num_workers: 16
 
 optim:
-  epochs: 20
-  learning_rate: 1.0e-5       # F5 finetune default
+  epochs: 50                  # upper bound only: early stop on validation
+  learning_rate: 7.5e-6       # stage 1's peak / 10
   num_warmup_updates: 500
+  lr_schedule: constant       # hold the peak LR after warmup (F5 default: linear_decay)
   grad_accumulation_steps: 1
   max_grad_norm: 1.0
   bnb_optimizer: False
@@ -66,9 +68,10 @@ ckpts:
   wandb_run_name: ${model.name}_finetune
   log_samples: True
   save_per_updates: 5000
-  keep_last_n_checkpoints: 3
+  keep_last_n_checkpoints: 10  # 50k updates of history (5.4 GB each) to pick the early-stop point from
   last_per_updates: 1000
   save_dir: /export/home2/n2505683d/VoxCPM/checkpoints/f5-svs/finetune
+  tensorboard_dir: ${ckpts.save_dir}/logs   # with the checkpoints, as VocalRender's <save_path>/logs
 
 # Validation loss (the training flow-matching loss, deterministic, CFG dropout off)
 # on the same CrawlSinger-zh-test items as the audio validation, with their

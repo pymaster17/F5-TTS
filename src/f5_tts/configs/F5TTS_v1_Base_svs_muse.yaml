@@ -8,10 +8,12 @@
 # launcher symlinks to /dataset/cyk/F5-SVS/muse. The expanded checkpoint is
 # placed in save_dir as pretrained_*.safetensors: fresh optimizer/scheduler.
 #
-# Budget: 10 epochs over Muse, as VocalRender's stage-1 run.
+# Budget: up to 50 epochs over Muse at a constant LR after warmup; the run is
+# stopped early on the audio validation (alignment IoU / RPA), since the first
+# 10-epoch linear-decay run (job 1083962, checkpoints/f5-svs/muse) only began to
+# follow the score as its LR ran out.
 # 2 x A100 40G (NVLink) x 38400 frames = ~820 s of audio per update, so Muse
-# (2000 h) is 9088 updates per epoch, ~91k over the 10 epochs. The LR decays
-# linearly to 0 at the last epoch.
+# (2000 h) is 9088 updates per epoch, ~454k at most.
 
 hydra:
   run:
@@ -25,9 +27,10 @@ datasets:
   num_workers: 16
 
 optim:
-  epochs: 10                  # = VocalRender stage 1 (10 epochs over Muse)
+  epochs: 50                  # upper bound only: early stop on validation
   learning_rate: 7.5e-5       # new score embeddings + speech->singing shift: pretrain-level LR
   num_warmup_updates: 2000
+  lr_schedule: constant       # hold the peak LR after warmup (F5 default: linear_decay)
   grad_accumulation_steps: 1
   max_grad_norm: 1.0
   bnb_optimizer: False
@@ -67,9 +70,10 @@ ckpts:
   wandb_run_name: ${model.name}_muse
   log_samples: True
   save_per_updates: 5000
-  keep_last_n_checkpoints: 3
+  keep_last_n_checkpoints: 10  # 50k updates of history (5.4 GB each) to pick the early-stop point from
   last_per_updates: 1000
-  save_dir: /export/home2/n2505683d/VoxCPM/checkpoints/f5-svs/muse
+  save_dir: /export/home2/n2505683d/VoxCPM/checkpoints/f5-svs/muse_const
+  tensorboard_dir: ${ckpts.save_dir}/logs   # with the checkpoints, as VocalRender's <save_path>/logs
 
 # Validation loss (the training flow-matching loss, deterministic, CFG dropout off)
 # on the same CrawlSinger-zh-test items as the audio validation, with their

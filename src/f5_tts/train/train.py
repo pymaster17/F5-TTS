@@ -60,11 +60,17 @@ def main(model_cfg):
             val_loss_cfg.dataset_dir, dataset_type="CustomDatasetPath", mel_spec_kwargs=model_cfg.model.mel_spec
         )
 
+    # like save_dir: absolute as is, relative to the repo root
+    tensorboard_dir = model_cfg.ckpts.get("tensorboard_dir")
+    if tensorboard_dir and not os.path.isabs(tensorboard_dir):
+        tensorboard_dir = str(files("f5_tts").joinpath(f"../../{tensorboard_dir}"))
+
     trainer = Trainer(
         model,
         epochs=model_cfg.optim.epochs,
         learning_rate=model_cfg.optim.learning_rate,
         num_warmup_updates=model_cfg.optim.num_warmup_updates,
+        lr_schedule=model_cfg.optim.get("lr_schedule", "linear_decay"),
         save_per_updates=model_cfg.ckpts.save_per_updates,
         keep_last_n_checkpoints=model_cfg.ckpts.keep_last_n_checkpoints,
         # an absolute save_dir is used as is; joinpath("../../" + "/abs") would nest it under the repo
@@ -82,6 +88,7 @@ def main(model_cfg):
         wandb_project=wandb_project,
         wandb_run_name=wandb_run_name,
         wandb_resume_id=wandb_resume_id,
+        tensorboard_dir=tensorboard_dir,
         last_per_updates=model_cfg.ckpts.last_per_updates,
         log_samples=model_cfg.ckpts.log_samples,
         bnb_optimizer=model_cfg.optim.bnb_optimizer,

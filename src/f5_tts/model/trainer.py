@@ -14,7 +14,7 @@ from accelerate import Accelerator
 from accelerate.utils import DistributedDataParallelKwargs, InitProcessGroupKwargs
 from ema_pytorch import EMA
 from torch.optim import AdamW
-from torch.optim.lr_scheduler import LinearLR, SequentialLR
+from torch.optim.lr_scheduler import ConstantLR, LinearLR, SequentialLR
 from torch.utils.data import DataLoader, Dataset, SequentialSampler
 from tqdm import tqdm
 
@@ -33,6 +33,7 @@ class Trainer:
         epochs,
         learning_rate,
         num_warmup_updates=20000,
+        lr_schedule: str = "linear_decay",  # after warmup: "linear_decay" to ~0 at the last epoch | "constant"
         save_per_updates=1000,
         keep_last_n_checkpoints: int = -1,  # -1 to keep all, 0 to not save intermediate, > 0 to keep last N checkpoints
         checkpoint_path=None,
@@ -47,6 +48,7 @@ class Trainer:
         wandb_project="test_f5-tts",
         wandb_run_name="test_run",
         wandb_resume_id: str = None,
+        tensorboard_dir: str | None = None,  # default runs/<wandb_run_name>, relative to the working directory
         log_samples: bool = False,
         last_per_updates=None,
         accelerate_kwargs: dict = dict(),
@@ -115,7 +117,7 @@ class Trainer:
 
             self.writer = None
             if self.accelerator.is_main_process:
-                self.writer = SummaryWriter(log_dir=f"runs/{wandb_run_name}")
+                self.writer = SummaryWriter(log_dir=tensorboard_dir or f"runs/{wandb_run_name}")
 
         self.model = model
 
@@ -131,6 +133,9 @@ class Trainer:
 
         self.epochs = epochs
         self.num_warmup_updates = num_warmup_updates
+        if lr_schedule not in ("linear_decay", "constant"):
+            raise ValueError(f"lr_schedule must be 'linear_decay' or 'constant', got {lr_schedule!r}")
+        self.lr_schedule = lr_schedule
         self.save_per_updates = save_per_updates
         self.keep_last_n_checkpoints = keep_last_n_checkpoints
         self.last_per_updates = default(last_per_updates, save_per_updates)
@@ -441,7 +446,11 @@ class Trainer:
         total_updates = math.ceil(len(train_dataloader) / self.grad_accumulation_steps) * self.epochs
         decay_updates = total_updates - warmup_updates
         warmup_scheduler = LinearLR(self.optimizer, start_factor=1e-8, end_factor=1.0, total_iters=warmup_updates)
-        decay_scheduler = LinearLR(self.optimizer, start_factor=1.0, end_factor=1e-8, total_iters=decay_updates)
+        if self.lr_schedule == "constant":
+            # hold the peak LR; epochs is then only an upper bound (stop early on validation)
+            decay_scheduler = ConstantLR(self.optimizer, factor=1.0, total_iters=0)
+        else:
+            decay_scheduler = LinearLR(self.optimizer, start_factor=1.0, end_factor=1e-8, total_iters=decay_updates)
         self.scheduler = SequentialLR(
             self.optimizer, schedulers=[warmup_scheduler, decay_scheduler], milestones=[warmup_updates]
         )
